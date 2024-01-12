@@ -1,8 +1,15 @@
-﻿using Microsoft.AspNetCore.Identity;
+﻿using Azure;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using UserManagement.Utils;
 using UserManagement.Dtos;
 using UserManagement.Models;
 using UserManagement.Services.UserService;
+using Microsoft.IdentityModel.Tokens;
+using System.Text;
+using System.Security.Claims;
+using System.IdentityModel.Tokens.Jwt;
+using Microsoft.AspNetCore.Authorization;
 
 // For more information on enabling Web API for empty projects, visit https://go.microsoft.com/fwlink/?LinkID=397860
 
@@ -20,22 +27,31 @@ namespace UserManagement.Controllers
         }
 
         // GET: api/<ValuesController>
-        [HttpGet("all-users")]
+        [HttpGet("all-users"), Authorize]
         public IActionResult GetAllUsers()
         {
             var users = _userService.GetAllUsers();
-            return Ok(users);
+            
+            if (!users.Any())
+            {
+                return BadRequest(new response<List<User>>{ Code = "203", Message = "No record found"});
+            }
+
+            var r = new response<List<User>>{ Data = users, Code = "00", Message = "Users retrieved successfully"};
+            return Ok(r);
         }
 
         // GET api/<ValuesController>/5
-        [HttpGet("{userId}")]
+        [HttpGet("{userId}"), Authorize]
         public IActionResult GetUser(int userId)
         {
             if (!_userService.UserExists(userId))
-                return NotFound();
+                return BadRequest("User does not exist");
 
             var user = _userService.GetUserById(userId);
-            return Ok(user);
+
+            var r = new response<User>{ Data= user, Code="200", Message="User retrieved successfully" };
+            return Ok(r);
         }
 
         // POST api/<ValuesController>
@@ -59,25 +75,57 @@ namespace UserManagement.Controllers
                 ModelState.AddModelError("", "Something went wrong creating the user");
                 return BadRequest(ModelState);
             }
-            return Created("User created sucessfully", user);
+
+            var r = new response<User>{ Data= user, Code="200", Message="User created successfully" };
+            return Ok(r);
         }
 
         [HttpPost("login")]
-        public IActionResult UserLogin([FromBody] loginDto details)
+        public IActionResult UserLogin([FromBody] loginDto request)
         {
-            var userExists = _userService.GetAllUsers()
-                .Where(u=> u.Username == details.Username)
+            var user = _userService.GetAllUsers()
+                .Where(u=> u.Username == request.Username)
                 .FirstOrDefault();
 
-            if (userExists == null)
+            if (user == null)
                 return BadRequest("User does not exist");
 
-            var passwordIsValid = BCrypt.Net.BCrypt.Verify(details.Password, userExists.Password);
+            var passwordIsValid = BCrypt.Net.BCrypt.Verify(request.Password, user.Password);
 
             if (!passwordIsValid)
                 return BadRequest("Incorrect Password");
 
-            return Ok("Login Sucessful");
+
+            if (user != null && passwordIsValid)
+            {
+                DateTime expireAt = DateTime.Now.AddMinutes(5);
+
+                var secretKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes("superSecretKey@345"));
+
+                var claims = new List<Claim>
+                {
+                    new Claim(ClaimTypes.Name, user.Username),
+                    new Claim(ClaimTypes.UserData, user.Password),
+                    //new Claim(ClaimTypes.Role, "Manager")
+
+                };
+
+                var signinCredentials = new SigningCredentials(secretKey, SecurityAlgorithms.HmacSha256);
+
+                var tokeOptions = new JwtSecurityToken(
+                    issuer: "issuer",
+                    audience: "audience",
+                    claims: claims,
+                    expires: expireAt,
+                    signingCredentials: signinCredentials
+                );
+                var tokenString = new JwtSecurityTokenHandler().WriteToken(tokeOptions);
+
+                var authToken = new AuthToken { ExpireAt = $"{expireAt}", Token = tokenString };
+
+                return Ok(new response<AuthToken> { Data = authToken, Code = StatsCodes.SUCCESS, Message = "Login Successful" });
+            }
+            return Unauthorized();
 
         }
 
@@ -117,3 +165,4 @@ namespace UserManagement.Controllers
         }
     }
 }
+    
